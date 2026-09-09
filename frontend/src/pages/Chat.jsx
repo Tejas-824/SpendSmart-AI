@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { askQuestion, getErrorMessage } from "../api";
 import ModelBadge from "../components/ModelBadge";
+import { useChat } from "../ChatContext";
 
 export default function Chat() {
-  const [messages, setMessages] = useState([]);
+  const { messages, setMessages } = useChat();
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");

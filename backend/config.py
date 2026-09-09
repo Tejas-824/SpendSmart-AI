@@ -33,7 +33,11 @@ class Settings:
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRE_MINUTES: int = int(os.getenv("JWT_EXPIRE_MINUTES", "720"))
 
-    FRONTEND_ORIGIN: str = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
+    FRONTEND_ORIGINS: list[str] = [
+    origin.strip()
+    for origin in os.getenv("FRONTEND_ORIGIN", "http://localhost:5173").split(",")
+    if origin.strip()
+]
     DB_PATH: str = os.getenv(
         "DB_PATH", os.path.join(os.path.dirname(__file__), "storage", "logs.db")
     )
