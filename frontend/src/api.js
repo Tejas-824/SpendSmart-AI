@@ -35,6 +35,10 @@ export function login(username, password) {
   return api.post("/api/auth/login", { username, password });
 }
 
+export function guestLogin() {
+  return api.post("/api/auth/guest");
+}
+
 export function askQuestion(question) {
   return api.post("/api/ask", { question });
 }
