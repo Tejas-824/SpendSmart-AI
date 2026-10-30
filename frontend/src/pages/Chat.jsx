@@ -26,6 +26,11 @@ export default function Chat() {
 
     try {
       const { data } = await askQuestion(question);
+
+      // How much cheaper this was than always using the big model.
+      const fullPrice = data.cost_usd + data.saved_usd;
+      const savedPct = data.saved_usd > 0 && fullPrice > 0 ? Math.round((data.saved_usd / fullPrice) * 100) : 0;
+
       setMessages((prev) => [
         ...prev,
         {
@@ -35,6 +40,9 @@ export default function Chat() {
           cached: data.cached,
           cost: data.cost_usd,
           tokens: data.tokens_in + data.tokens_out,
+          reason: data.reason,
+          retried: data.retried,
+          savedPct,
           note: data.note,
         },
       ]);
@@ -55,19 +63,29 @@ export default function Chat() {
           <div className="chat-empty">
             <p>Ask anything. Short, simple questions get routed to a lightweight model.</p>
             <p>Longer or "explain/compare/write"-style questions get the bigger model - unless today's budget is already spent.</p>
+            <p>Every answer shows why it was routed that way, and what it cost.</p>
           </div>
         )}
 
         {messages.map((message, index) => (
           <div key={index} className={"bubble bubble--" + message.role}>
             <p className="bubble__text">{message.text}</p>
+
             {message.role === "assistant" && (
-              <div className="bubble__meta">
-                <ModelBadge tier={message.tier} cached={message.cached} />
-                <span className="bubble__stat">{message.tokens} tokens</span>
-                <span className="bubble__stat">${message.cost.toFixed(6)}</span>
-              </div>
+              <>
+                <div className="bubble__meta">
+                  <ModelBadge tier={message.tier} cached={message.cached} />
+                  {message.retried && <span className="badge badge--warn">escalated</span>}
+                  <span className="bubble__stat">{message.tokens} tokens</span>
+                  <span className="bubble__stat">${message.cost.toFixed(6)}</span>
+                  {message.savedPct > 0 && (
+                    <span className="bubble__stat bubble__stat--saved">{message.savedPct}% cheaper than big model</span>
+                  )}
+                </div>
+                <p className="bubble__why">Why: {message.reason}</p>
+              </>
             )}
+
             {message.note && <p className="bubble__note">{message.note}</p>}
           </div>
         ))}
