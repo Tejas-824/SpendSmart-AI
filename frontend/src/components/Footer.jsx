@@ -4,7 +4,9 @@ export default function Footer() {
   return (
     <footer className="footer">
       <div className="footer__inner">
-        <span className="footer__text">TokenWise - a cost-aware LLM router, built as a learning project.</span>
+        <span className="footer__text">
+  SpendSmart AI - Smarter AI routing, lower costs, better answers.
+</span>
         <nav className="footer__links">
           <Link to="/chat">Chat</Link>
           <Link to="/stats">Stats</Link>

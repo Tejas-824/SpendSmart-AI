@@ -15,7 +15,7 @@ export default function Navbar() {
       <div className="navbar__inner">
         <NavLink to="/" className="navbar__brand">
           <span className="navbar__mark" aria-hidden="true" />
-          TokenWise
+          SpendSmart AI
         </NavLink>
 
         {isAuthenticated && (
