@@ -1,8 +1,17 @@
 """
-The actual "brain" of the router. Nothing fancy on purpose - a project
-like this doesn't need a classifier model to decide if a question is
-simple or not, it needs a rule that's easy to explain in an interview.
+Decides small model vs big model, and says WHY in plain words so the
+reason can be shown next to every answer.
+
+Two rules, checked in order:
+ 1. Long question (over the word limit) -> big model
+ 2. Contains a "needs real thinking" word (explain, compare, ...) -> big model
+Otherwise -> small model.
+
+Keywords match whole words only, so "planet" no longer triggers "plan".
 """
+
+import re
+from typing import NamedTuple
 
 from config import settings
 
@@ -12,18 +21,30 @@ COMPLEXITY_SIGNAL_WORDS = (
     "essay", "debug", "optimize", "plan",
 )
 
+_SIGNAL_PATTERN = re.compile(
+    r"\b(" + "|".join(re.escape(w) for w in COMPLEXITY_SIGNAL_WORDS) + r")\b"
+)
 
-def classify_question(question: str) -> str:
+
+class RouteDecision(NamedTuple):
+    tier: str    # "small" or "big"
+    reason: str  # plain-words explanation, shown in the UI
+
+
+def classify_question(question: str) -> RouteDecision:
     text = question.strip().lower()
     word_count = len(text.split())
 
     if word_count > settings.COMPLEXITY_WORD_THRESHOLD:
-        return "big"
+        return RouteDecision(
+            "big", f"long question ({word_count} words, limit {settings.COMPLEXITY_WORD_THRESHOLD})"
+        )
 
-    if any(signal in text for signal in COMPLEXITY_SIGNAL_WORDS):
-        return "big"
+    match = _SIGNAL_PATTERN.search(text)
+    if match:
+        return RouteDecision("big", f'contains "{match.group(1)}"')
 
-    return "small"
+    return RouteDecision("small", f"short and simple ({word_count} words)")
 
 
 def model_for_tier(tier: str) -> str:
