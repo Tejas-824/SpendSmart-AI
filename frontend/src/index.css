@@ -599,3 +599,43 @@ button {
     padding: 26px 20px;
   }
 }
+
+.badge--warn { background: var(--accent-red-dim); color: var(--accent-amber); }
+
+.bubble__stat--saved { color: var(--accent-teal); }
+.bubble__why { margin-top: 6px; font-size: 0.78rem; color: var(--text-dim); }
+
+.stat-card__hint { font-size: 0.74rem; color: var(--text-dim); line-height: 1.4; }
+
+.budget-bar__fill--warn { background: var(--accent-amber); }
+
+.charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+.chart-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  min-width: 0; /* lets the chart shrink inside the grid on small screens */
+}
+
+.chart-card__title { font-size: 1rem; }
+.chart-card__subtitle { font-size: 0.78rem; color: var(--text-dim); margin: 4px 0 12px; }
+
+.table-view {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+  font-size: 0.85rem;
+}
+
+.table-view summary { cursor: pointer; color: var(--text-dim); }
+.table-view__scroll { overflow-x: auto; margin-top: 12px; }
+.table-view table { width: 100%; border-collapse: collapse; white-space: nowrap; }
+.table-view th, .table-view td { text-align: left; padding: 6px 12px 6px 0; border-bottom: 1px solid var(--border); }
+.table-view th { color: var(--text-dim); font-weight: 500; }
+
+@media (max-width: 760px) {
+  .charts-grid { grid-template-columns: 1fr; }
+}
