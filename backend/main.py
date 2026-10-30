@@ -2,27 +2,27 @@
 Entry point. Run with: uvicorn main:app --reload
 
 What happens on POST /api/ask, in order:
- 1. Check cache - if we've seen this exact question before, return it
-    for free, no model call at all.
- 2. Decide small vs big model from the question itself (router/rules.py)
- 3. Check today's budget - if it's already spent, force the small model
-    even if the rule above picked the big one (router/budget.py)
- 4. Call the model, count tokens, estimate cost
- 5. Log it and cache it
+ 1. Cache - same or similar question seen recently? Return it free.
+ 2. Route - small or big model, and WHY (router/rules.py)
+ 3. Budget - if today's budget is spent, force the small model
+ 4. Call the model with fallback + escalation (router/pipeline.py)
+ 5. Log real tokens and cost, cache the answer, add a budget warning
 """
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from auth import create_access_token, require_auth, verify_password
 from cache import memory_cache
 from config import settings
-from llm.client import LLMError, ask_model
+from guest import check_guest_limit, get_client_ip
+from llm.client import LLMError
 from models import AskRequest, AskResponse, LoginRequest, LoginResponse, StatsResponse
-from router.budget import enforce_budget
-from router.rules import classify_question, model_for_tier
+from router.budget import budget_warning, enforce_budget
+from router.pipeline import answer_question
+from router.rules import classify_question
 from storage.db import get_stats, init_db, log_request
-from utils.tokens import count_tokens, estimate_cost
+from utils.tokens import cost_if_big
 
 app = FastAPI(title="TokenWise API")
 
@@ -49,91 +49,113 @@ def health():
 def login(payload: LoginRequest):
     if payload.username != settings.AUTH_USERNAME or not verify_password(payload.password):
         raise HTTPException(status_code=401, detail="Incorrect username or password.")
-    token = create_access_token(payload.username)
-    return LoginResponse(access_token=token)
+    return LoginResponse(access_token=create_access_token(payload.username))
+
+
+@app.post("/api/auth/guest", response_model=LoginResponse)
+def guest_login():
+    # Guests get a short 1-hour token.
+    return LoginResponse(access_token=create_access_token("guest", expire_minutes=60))
 
 
 @app.post("/api/ask", response_model=AskResponse)
-def ask(payload: AskRequest, _user: str = Depends(require_auth)):
+def ask(payload: AskRequest, request: Request, user: str = Depends(require_auth)):
+    if user == "guest":
+        check_guest_limit(get_client_ip(request))
+
     question = payload.question.strip()
     if not question:
         raise HTTPException(status_code=400, detail="Question can't be empty.")
 
-    # 1. Cache lookup
+    # 1. Cache
     if settings.CACHE_ENABLED:
-        cached_entry = memory_cache.get(question)
-        if cached_entry:
+        hit = memory_cache.get(question)
+        if hit:
+            entry, match = hit
+            reason = "answered from cache" if match == "exact" else "matched a similar earlier question"
             log_request(
                 question=question,
-                model_used=cached_entry["model_used"],
-                model_tier=cached_entry["model_tier"],
-                tokens_in=cached_entry["tokens_in"],
-                tokens_out=cached_entry["tokens_out"],
+                model_used=entry["model_used"],
+                model_tier=entry["model_tier"],
+                tokens_in=entry["tokens_in"],
+                tokens_out=entry["tokens_out"],
                 cost_usd=0.0,
                 cached=True,
+                username=user,
+                reason=reason,
+                retried=False,
             )
             return AskResponse(
-                answer=cached_entry["answer"],
-                model_used=cached_entry["model_used"],
-                model_tier=cached_entry["model_tier"],
-                tokens_in=cached_entry["tokens_in"],
-                tokens_out=cached_entry["tokens_out"],
+                answer=entry["answer"],
+                model_used=entry["model_used"],
+                model_tier=entry["model_tier"],
+                tokens_in=entry["tokens_in"],
+                tokens_out=entry["tokens_out"],
                 cost_usd=0.0,
                 cached=True,
-                note="Served from cache - no model call was made.",
+                reason=reason,
+                saved_usd=cost_if_big(entry["tokens_in"], entry["tokens_out"]),
+                match=match,
+                note=(
+                    "Served from cache - no model call was made."
+                    if match == "exact"
+                    else "Matched a similar earlier question - no model call was made."
+                ),
             )
 
-    # 2. Route
-    requested_tier = classify_question(question)
+    # 2 + 3. Route, then check the budget
+    decision = classify_question(question)
+    final_tier, budget_note = enforce_budget(decision.tier, user)
 
-    # 3. Budget guard
-    final_tier, budget_note = enforce_budget(requested_tier)
-    model = model_for_tier(final_tier)
-
-    # 4. Call the model
+    # 4. Call the model (fallback + escalation live inside)
     try:
-        answer = ask_model(question, model)
+        result = answer_question(question, final_tier, user)
     except LLMError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
-    tokens_in = count_tokens(question)
-    tokens_out = count_tokens(answer)
-    cost = estimate_cost(tokens_in, tokens_out, final_tier)
-
-    # 5. Log + cache
+    # 5. Log, cache, warn
     log_request(
         question=question,
-        model_used=model,
-        model_tier=final_tier,
-        tokens_in=tokens_in,
-        tokens_out=tokens_out,
-        cost_usd=cost,
+        model_used=result.model,
+        model_tier=result.tier,
+        tokens_in=result.tokens_in,
+        tokens_out=result.tokens_out,
+        cost_usd=result.cost_usd,
         cached=False,
+        username=user,
+        reason=decision.reason,
+        retried=result.retried,
     )
     if settings.CACHE_ENABLED:
         memory_cache.set(
             question,
             {
-                "answer": answer,
-                "model_used": model,
-                "model_tier": final_tier,
-                "tokens_in": tokens_in,
-                "tokens_out": tokens_out,
+                "answer": result.answer,
+                "model_used": result.model,
+                "model_tier": result.tier,
+                "tokens_in": result.tokens_in,
+                "tokens_out": result.tokens_out,
             },
         )
 
+    # If the budget already forced the small model, that note says it all.
+    warning = None if budget_note else budget_warning(user)
+    notes = [budget_note, *result.notes, warning]
     return AskResponse(
-        answer=answer,
-        model_used=model,
-        model_tier=final_tier,
-        tokens_in=tokens_in,
-        tokens_out=tokens_out,
-        cost_usd=cost,
+        answer=result.answer,
+        model_used=result.model,
+        model_tier=result.tier,
+        tokens_in=result.tokens_in,
+        tokens_out=result.tokens_out,
+        cost_usd=result.cost_usd,
         cached=False,
-        note=budget_note,
+        reason=decision.reason,
+        saved_usd=round(cost_if_big(result.tokens_in, result.tokens_out) - result.cost_usd, 8),
+        retried=result.retried,
+        note=" ".join(n for n in notes if n) or None,
     )
 
 
 @app.get("/api/stats", response_model=StatsResponse)
-def stats(_user: str = Depends(require_auth)):
-    return get_stats()
+def stats(user: str = Depends(require_auth)):
+    return get_stats(user)
