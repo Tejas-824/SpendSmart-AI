@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { login, getErrorMessage } from "../api";
+import { login, guestLogin, getErrorMessage } from "../api";
 import { useAuth } from "../AuthContext";
 
 export default function Login() {
@@ -32,12 +32,26 @@ export default function Login() {
     }
   }
 
+    async function handleGuest() {
+    setError("");
+    setLoading(true);
+    try {
+      const { data } = await guestLogin();
+      signIn(data.access_token);
+      navigate("/chat");
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <div className="auth-screen">
       <form className="auth-card" onSubmit={handleSubmit}>
         <div className="auth-card__mark" aria-hidden="true" />
-        <h1 className="auth-card__title">Sign in to TokenWise</h1>
-        <p className="auth-card__subtitle">One account, just for you.</p>
+        <h1 className="auth-card__title">Sign in to SpendSmart AI</h1>
+        <p className="auth-card__subtitle">Sign in, or try the demo with no signup.</p>
 
         <label className="field">
           <span className="field__label">Username</span>
@@ -66,6 +80,16 @@ export default function Login() {
 
         <button className="button button--primary button--full" type="submit" disabled={loading}>
           {loading ? "Signing in..." : "Sign in"}
+        </button>
+
+        <button
+          className="button button--secondary button--full"
+          type="button"
+          onClick={handleGuest}
+          disabled={loading}
+          style={{ marginTop: 10 }}
+        >
+          Try demo (5 free questions)
         </button>
       </form>
     </div>
