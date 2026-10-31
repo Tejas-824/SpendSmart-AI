@@ -1,80 +1,27 @@
-# TokenWise
+# SmartSpend AI
 
-A small chat app that thinks about cost before it thinks about your question.
+A chat app that tries to spend less on AI. Every AI answer costs money, and the bigger the model, the more it costs. But most questions are simple and don't need the biggest model. So this app checks each question and sends it to the cheapest model that can handle it.
 
-Every question you ask gets classified as simple or complex. Simple questions
-go to a small, cheap model. Complex ones go to a bigger model - unless
-today's spending limit is already used up, in which case everything gets
-downgraded automatically. Repeated questions are served from a cache instead
-of calling the model again. Every request is logged so you can see exactly
-what it cost.
+## What it does
+- Sends simple questions to a small AI model and harder ones to a bigger model
+- Shows why it picked that model, how many tokens were used and what it cost
+- Remembers answers, so repeated or similar questions don't cost anything
+- Has a daily budget. Once it's used up, the app switches to the cheaper model
+- Tries the other model if one fails, and asks the bigger model if the small one isn't sure
+- Has a stats page with charts showing cost, cache hits and how much was saved
+- Login for me, and a limited guest demo for anyone who wants to try it
 
-## How it works
+## Built with
+React, FastAPI (Python), SQLite, Groq API, JWT and bcrypt for login, Recharts for the charts
 
-1. You ask a question in the chat.
-2. **Cache check** - if you (or anyone) asked this exact question before, you
-   get the saved answer instantly, no model call, no cost.
-3. **Routing** - the question is scored: short and simple → small model,
-   long or asking for explanation/comparison/writing → big model.
-4. **Budget guard** - if today's estimated spend has hit the daily limit, the
-   request is forced onto the small model regardless of step 3.
-5. The answer comes back with a badge showing which model handled it, how
-   many tokens it used, and what it cost.
-6. The Stats page shows totals: requests, tokens, cost, cache savings, and
-   today's budget usage.
+## What I learned
+- How a React frontend and a FastAPI backend talk to each other, and why CORS matters
+- How tokens, models and pricing work when you use an AI API
+- How to keep secrets out of code, and how login with JWT works
+- Fixing problems after going live, like a model being retired and CORS errors
 
-## Stack
-
-- **Backend:** FastAPI, SQLite, JWT auth, [Groq](https://console.groq.com) for
-  the actual LLM calls (free tier)
-- **Frontend:** React + Vite, plain CSS, React Router
-
-## Running it locally
-
-### 1. Backend
-
-```bash
-cd backend
-python -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-Copy `.env.example` to `.env` and fill it in:
-
-```bash
-cp .env.example .env
-```
-
-You need three things in `.env`:
-
-- `GROQ_API_KEY` - get a free one at https://console.groq.com
-- `AUTH_PASSWORD_HASH` - generate it by running:
-  ```bash
-  python generate_password_hash.py
-  ```
-  It'll ask you to type a password and print a line to paste into `.env`.
-- `JWT_SECRET` - any long random string (e.g. run `python -c "import secrets; print(secrets.token_hex(32))"`)
-
-Then start the server:
-
-```bash
-uvicorn main:app --reload
-```
-
-It runs at `http://localhost:8000`. Check `http://localhost:8000/docs` for the
-interactive API docs FastAPI generates for you automatically.
-
-### 2. Frontend
-
-```bash
-cd frontend
-npm install
-cp .env.example .env
-npm run dev
-```
-
-It runs at `http://localhost:5173`. Log in with the username from your
-backend `.env` (default `admin`) and the password you chose when generating
-the hash.
-
+## Things I know are limited
+- The cache is stored in memory, so it resets when the server restarts
+- The free hosting resets the database sometimes, so old stats can disappear
+- Costs are estimates from Groq's public prices, because the free tier doesn't actually charge me
+- The cache matches similar questions by comparing keywords, not by meaning
