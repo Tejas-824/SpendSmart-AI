@@ -1,7 +1,11 @@
 """
-Plain SQLite. One row per question: what was asked, which model answered,
-real tokens, cost, who asked, why it was routed that way, and whether it
-came from cache or needed a retry.
+One row per question: what was asked, which model answered, real tokens,
+cost, who asked, why it was routed that way, and whether it came from
+cache or needed a retry.
+
+Two databases, same code:
+  - DATABASE_URL set   -> Postgres (Neon). Data survives restarts and redeploys.
+  - DATABASE_URL empty -> local SQLite file, so you can still run it with no setup.
 
 All dates are UTC, so "today" means the same thing everywhere.
 """
@@ -13,18 +17,35 @@ from datetime import datetime, timedelta, timezone
 
 from config import settings
 
-os.makedirs(os.path.dirname(settings.DB_PATH), exist_ok=True)
+USE_POSTGRES = bool(settings.DATABASE_URL)
+
+if USE_POSTGRES:
+    import psycopg
+    from psycopg.rows import dict_row
+else:
+    os.makedirs(os.path.dirname(settings.DB_PATH), exist_ok=True)
 
 
 @contextmanager
 def get_connection():
-    conn = sqlite3.connect(settings.DB_PATH)
-    conn.row_factory = sqlite3.Row
+    if USE_POSTGRES:
+        # Neon sleeps when idle, so the first connection can take a moment.
+        conn = psycopg.connect(settings.DATABASE_URL, row_factory=dict_row, connect_timeout=15)
+    else:
+        conn = sqlite3.connect(settings.DB_PATH)
+        conn.row_factory = sqlite3.Row
     try:
         yield conn
         conn.commit()
     finally:
         conn.close()
+
+
+def run(conn, sql: str, params: tuple = ()):
+    """Run one query. I write '?' placeholders; Postgres wants '%s'."""
+    if USE_POSTGRES:
+        sql = sql.replace("?", "%s")
+    return conn.execute(sql, params)
 
 
 def _utc_today() -> str:
@@ -33,7 +54,30 @@ def _utc_today() -> str:
 
 def init_db() -> None:
     with get_connection() as conn:
-        conn.execute(
+        if USE_POSTGRES:
+            run(
+                conn,
+                """
+                CREATE TABLE IF NOT EXISTS requests (
+                    id SERIAL PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    question TEXT NOT NULL,
+                    model_used TEXT NOT NULL,
+                    model_tier TEXT NOT NULL,
+                    tokens_in INTEGER NOT NULL,
+                    tokens_out INTEGER NOT NULL,
+                    cost_usd DOUBLE PRECISION NOT NULL,
+                    cached INTEGER NOT NULL,
+                    username TEXT NOT NULL DEFAULT 'admin',
+                    reason TEXT NOT NULL DEFAULT '',
+                    retried INTEGER NOT NULL DEFAULT 0
+                )
+                """,
+            )
+            return
+
+        run(
+            conn,
             """
             CREATE TABLE IF NOT EXISTS requests (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,11 +93,11 @@ def init_db() -> None:
                 reason TEXT NOT NULL DEFAULT '',
                 retried INTEGER NOT NULL DEFAULT 0
             )
-            """
+            """,
         )
-        # Older databases don't have the newer columns. Add them in place
-        # so nobody has to delete logs.db.
-        existing = {row["name"] for row in conn.execute("PRAGMA table_info(requests)")}
+        # Older local databases don't have the newer columns. Add them in
+        # place so nobody has to delete logs.db.
+        existing = {row["name"] for row in run(conn, "PRAGMA table_info(requests)")}
         migrations = {
             "username": "ALTER TABLE requests ADD COLUMN username TEXT NOT NULL DEFAULT 'admin'",
             "reason": "ALTER TABLE requests ADD COLUMN reason TEXT NOT NULL DEFAULT ''",
@@ -61,7 +105,7 @@ def init_db() -> None:
         }
         for column, statement in migrations.items():
             if column not in existing:
-                conn.execute(statement)
+                run(conn, statement)
 
 
 def log_request(
@@ -77,7 +121,8 @@ def log_request(
     retried: bool,
 ) -> None:
     with get_connection() as conn:
-        conn.execute(
+        run(
+            conn,
             """
             INSERT INTO requests
                 (created_at, question, model_used, model_tier, tokens_in, tokens_out,
@@ -95,16 +140,18 @@ def log_request(
 def get_today_cost(username: str) -> float:
     """Money spent today by this kind of user (guest vs everyone else).
     Cache hits cost nothing, so they don't count."""
+    is_guest = username == "guest"
     with get_connection() as conn:
-        row = conn.execute(
+        row = run(
+            conn,
             """
             SELECT COALESCE(SUM(cost_usd), 0) AS total
             FROM requests
             WHERE cached = 0
               AND created_at LIKE ?
-              AND (username = 'guest') = ?
+              AND (CASE WHEN username = 'guest' THEN 1 ELSE 0 END) = ?
             """,
-            (f"{_utc_today()}%", int(username == "guest")),
+            (f"{_utc_today()}%", int(is_guest)),
         ).fetchone()
         return float(row["total"])
 
@@ -115,7 +162,8 @@ def get_stats(username: str) -> dict:
     since = (datetime.now(timezone.utc).date() - timedelta(days=6)).isoformat()
 
     with get_connection() as conn:
-        totals = conn.execute(
+        totals = run(
+            conn,
             """
             SELECT
                 COUNT(*) AS total_requests,
@@ -132,7 +180,8 @@ def get_stats(username: str) -> dict:
         ).fetchone()
 
         # What the cache hits would have cost if they'd called their own model.
-        cache_saved = conn.execute(
+        cache_saved = run(
+            conn,
             """
             SELECT COALESCE(SUM(
                 CASE WHEN model_tier = 'big'
@@ -145,7 +194,8 @@ def get_stats(username: str) -> dict:
             (big_in, big_out, small_in, small_out),
         ).fetchone()["total"]
 
-        day_rows = conn.execute(
+        day_rows = run(
+            conn,
             """
             SELECT
                 substr(created_at, 1, 10) AS day,
@@ -156,10 +206,16 @@ def get_stats(username: str) -> dict:
                 SUM((tokens_in * ? + tokens_out * ?) / 1000000.0) AS baseline
             FROM requests
             WHERE created_at >= ?
-            GROUP BY day
+            GROUP BY substr(created_at, 1, 10)
             """,
             (big_in, big_out, since),
         ).fetchall()
+
+    # Postgres hands back Decimal for some sums, so turn everything into
+    # plain numbers before it goes into the JSON response.
+    total_cost = float(totals["total_cost"])
+    baseline = float(totals["baseline"])
+    cache_saved = float(cache_saved)
 
     by_day = {row["day"]: row for row in day_rows}
     daily = []
@@ -172,26 +228,26 @@ def get_stats(username: str) -> dict:
                 "small_calls": int(row["small_calls"]) if row else 0,
                 "big_calls": int(row["big_calls"]) if row else 0,
                 "cache_hits": int(row["cache_hits"]) if row else 0,
-                "cost_usd": round(row["cost"], 8) if row else 0.0,
-                "baseline_usd": round(row["baseline"], 8) if row else 0.0,
+                "cost_usd": round(float(row["cost"]), 8) if row else 0.0,
+                "baseline_usd": round(float(row["baseline"]), 8) if row else 0.0,
             }
         )
 
-    total_requests = totals["total_requests"]
-    baseline = totals["baseline"]
-    saved_total = baseline - totals["total_cost"]
+    total_requests = int(totals["total_requests"])
+    cache_hits = int(totals["cache_hits"])
+    saved_total = baseline - total_cost
     today_cost = get_today_cost(username)
     budget = settings.budget_for(username)
 
     return {
         "total_requests": total_requests,
-        "cache_hits": totals["cache_hits"],
-        "cache_hit_rate": round(totals["cache_hits"] / total_requests, 4) if total_requests else 0.0,
-        "small_calls": totals["small_calls"],
-        "big_calls": totals["big_calls"],
-        "retries": totals["retries"],
-        "total_tokens": totals["total_tokens"],
-        "total_cost_usd": round(totals["total_cost"], 8),
+        "cache_hits": cache_hits,
+        "cache_hit_rate": round(cache_hits / total_requests, 4) if total_requests else 0.0,
+        "small_calls": int(totals["small_calls"]),
+        "big_calls": int(totals["big_calls"]),
+        "retries": int(totals["retries"]),
+        "total_tokens": int(totals["total_tokens"]),
+        "total_cost_usd": round(total_cost, 8),
         "baseline_cost_usd": round(baseline, 8),
         "saved_usd": round(saved_total, 8),
         "saved_pct": round(saved_total / baseline, 4) if baseline > 0 else 0.0,
