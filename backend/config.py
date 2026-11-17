@@ -65,6 +65,7 @@ class Settings:
         for origin in os.getenv("FRONTEND_ORIGIN", "http://localhost:5173").split(",")
         if origin.strip()
     ]
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "").strip()
     DB_PATH: str = os.getenv(
         "DB_PATH", os.path.join(os.path.dirname(__file__), "storage", "logs.db")
     )
