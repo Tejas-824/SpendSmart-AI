@@ -6,3 +6,4 @@ tiktoken
 PyJWT
 bcrypt
 pydantic
+psycopg[binary]
